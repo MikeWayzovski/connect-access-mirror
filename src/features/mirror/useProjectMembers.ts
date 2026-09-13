@@ -26,10 +26,11 @@ export function useProjectMembers(options: {
   const [capability, setCapability] = useState<OperatorCapability>("unknown");
 
   useEffect(() => {
-    if (!options.token && seedRef.current?.length) {
-      setUsers(seedRef.current);
+    const seed = seedRef.current;
+    if (seed?.length) {
+      setUsers((current) => mergeUsers(seed, current));
     }
-  }, [options.token]);
+  }, [options.seed?.length]);
 
   useEffect(() => {
     if (!options.token || !options.projectId) return;
@@ -49,6 +50,7 @@ export function useProjectMembers(options: {
         if (cancelled) return;
         const merged = mergeUsers(seedRef.current ?? [], result.users);
         setUsers(merged);
+
         const cap = await resolveOperatorCapability({
           token: options.token!,
           projectId: options.projectId,
@@ -57,14 +59,22 @@ export function useProjectMembers(options: {
           members: merged,
         });
         if (!cancelled) setCapability(cap);
-        if (!merged.length) {
-          setError("No project members were returned. You may lack permission to list users.");
+
+        if (!merged.length && result.coreForbidden) {
+          setError("Could not list members on this project via the Core API.");
+          setErrorStatus(403);
         }
       } catch (cause) {
         if (cancelled) return;
-        const status = isTrimbleHttpError(cause) ? cause.status : null;
-        setErrorStatus(status);
-        setError(cause instanceof Error ? cause.message : "Failed to load project members.");
+        if (isTrimbleHttpError(cause) && cause.status === 401) {
+          setErrorStatus(401);
+          setError(cause.message);
+        } else {
+          console.info(
+            "[access-mirror] Member fetch recovered from error; keeping Workspace seed if present",
+            cause instanceof Error ? cause.message : cause,
+          );
+        }
         if (seedRef.current?.length) setUsers(seedRef.current);
       } finally {
         if (!cancelled) setLoading(false);

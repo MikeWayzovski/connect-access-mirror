@@ -14,6 +14,7 @@ import {
 import type {
   ConnectUserSummary,
   MirrorMode,
+  OperatorCapability,
   PreviewAction,
   PreviewRow,
   ProjectRole,
@@ -117,6 +118,7 @@ export function useMirrorFlow(options: {
   currentProjectId?: string;
   currentProjectLocation?: string;
   operatorEmail?: string;
+  capability?: OperatorCapability;
 }) {
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState<MirrorMode | null>(null);
@@ -163,12 +165,16 @@ export function useMirrorFlow(options: {
         }
 
         const accountId = extractAccountId(me, projectDetails);
-        const accountRows = accountId
-          ? await tryAccountPreview(token, accountId, source, target, regions, home.origin)
-          : null;
+        const isAccountAdmin = options.capability === "account-admin";
+        const accountRows =
+          isAccountAdmin && accountId
+            ? await tryAccountPreview(token, accountId, source, target, regions, home.origin)
+            : null;
 
-        if (!accountId) {
-          console.info("[access-mirror] No accountId on users/me or project — using Core project fallback");
+        if (!isAccountAdmin) {
+          console.info(
+            "[access-mirror] Skipping Account APIs (not Account Admin) — Core project-level preview",
+          );
         }
 
         if (accountRows) {
@@ -186,22 +192,54 @@ export function useMirrorFlow(options: {
           source,
           target,
           options.operatorEmail,
+          options.currentProjectId,
+          home.origin,
         );
         setMode("operator");
         setRows(operatorRows);
         setMessage(
-          `Operator-visible path: ${operatorRows.filter((row) => row.action === "add").length} project(s) to update.`,
+          `Project-level preview: ${operatorRows.filter((row) => row.action === "add").length} project(s) to update.`,
         );
       } catch (error) {
+        const status = isHttpError(error) ? error.status ?? null : null;
+        if (status === 403) {
+          console.info("[access-mirror] 403 during preview — retrying Core project-level path");
+          try {
+            const regions = await loadRegions(options.token);
+            const home = pickHomeRegion(regions, options.currentProjectLocation);
+            const operatorRows = await operatorPreview(
+              options.token,
+              regions,
+              source,
+              target,
+              options.operatorEmail,
+              options.currentProjectId,
+              home.origin,
+            );
+            setMode("operator");
+            setErrorStatus(null);
+            setRows(operatorRows);
+            setMessage(
+              `Project-level preview: ${operatorRows.filter((row) => row.action === "add").length} project(s) to update.`,
+            );
+            return;
+          } catch (fallbackError) {
+            setErrorStatus(isHttpError(fallbackError) ? fallbackError.status ?? 403 : 403);
+            setMessage(
+              fallbackError instanceof Error ? fallbackError.message : "Preview failed after Core fallback.",
+            );
+            return;
+          }
+        }
         setRows([]);
         setMode(null);
-        setErrorStatus(isHttpError(error) ? error.status ?? null : null);
+        setErrorStatus(status === 403 ? null : status);
         setMessage(error instanceof Error ? error.message : "Preview failed.");
       } finally {
         setBusy(false);
       }
     },
-    [options.currentProjectId, options.currentProjectLocation, options.operatorEmail, options.token],
+    [options.capability, options.currentProjectId, options.currentProjectLocation, options.operatorEmail, options.token],
   );
 
   const apply = useCallback(
@@ -314,8 +352,21 @@ async function operatorPreview(
   source: ConnectUserSummary,
   target: ConnectUserSummary,
   operatorEmail?: string,
+  currentProjectId?: string,
+  currentOrigin?: string,
 ): Promise<PreviewRow[]> {
   const projects: ProjectSummary[] = [];
+  const seen = new Set<string>();
+
+  if (currentProjectId && currentOrigin) {
+    projects.push({
+      id: currentProjectId,
+      name: "Current project",
+      regionOrigin: currentOrigin,
+    });
+    seen.add(currentProjectId);
+  }
+
   for (const region of regions) {
     try {
       const payload = await coreRequest<unknown>(token, {
@@ -323,7 +374,15 @@ async function operatorPreview(
         path: "/tc/api/2.0/projects",
         query: { fullyLoaded: false },
       });
-      projects.push(...parseProjects(payload, region.origin));
+      for (const project of parseProjects(payload, region.origin)) {
+        if (seen.has(project.id)) {
+          const existing = projects.find((item) => item.id === project.id);
+          if (existing && existing.name === "Current project") existing.name = project.name;
+          continue;
+        }
+        seen.add(project.id);
+        projects.push(project);
+      }
     } catch {
       // Region may be empty for this user.
     }
@@ -351,9 +410,17 @@ async function operatorPreview(
       if (targetMember) {
         action = "already-member";
         detail = `Target already has role ${normalizeRole(targetMember.role)}.`;
-      } else if (operatorRole && operatorRole !== "ADMIN") {
+      } else if (operatorRole === "ADMIN") {
+        action = "add";
+      } else if (operatorRole === "USER") {
         action = "forbidden";
-        detail = "You are not a project admin on this project.";
+        detail = "Requires Project Admin role on this project";
+      } else if (project.id === currentProjectId) {
+        action = "add";
+        detail = `${detail} Operator role not in member payload; allowing current project.`;
+      } else {
+        action = "forbidden";
+        detail = "Requires Project Admin role on this project";
       }
 
       return {
@@ -365,6 +432,16 @@ async function operatorPreview(
         detail,
       } satisfies PreviewRow;
     } catch (error) {
+      if (isTrimbleHttpError(error) && error.status === 403) {
+        return {
+          projectId: project.id,
+          projectName: project.name,
+          regionOrigin: project.regionOrigin,
+          sourceRole: "USER" as const,
+          action: "forbidden" as const,
+          detail: "Requires Project Admin role on this project",
+        } satisfies PreviewRow;
+      }
       return {
         projectId: project.id,
         projectName: project.name,

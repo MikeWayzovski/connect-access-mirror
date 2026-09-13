@@ -93,12 +93,13 @@ export async function fetchProjectMembers(input: {
   token: string;
   projectId: string;
   location?: string;
-}): Promise<{ users: ConnectUserSummary[]; origin: string }> {
+}): Promise<{ users: ConnectUserSummary[]; origin: string; coreForbidden: boolean }> {
   const regions = await loadRegions(input.token);
   const home = pickHomeRegion(regions, input.location);
   const origins = uniqueOrigins([home, ...regions]);
 
-  let forbidden: Error | null = null;
+  let coreForbidden = false;
+
   for (const region of origins) {
     try {
       const payload = await coreRequest<unknown>(input.token, {
@@ -109,23 +110,24 @@ export async function fetchProjectMembers(input: {
       console.info(
         `[access-mirror] Core GET /projects/${input.projectId}/users via ${region.origin} returned ${users.length} member(s)`,
       );
-      return { users, origin: region.origin };
+      return { users, origin: region.origin, coreForbidden: false };
     } catch (error) {
-      if (isTrimbleHttpError(error) && error.status === 403) {
-        forbidden = error;
-        console.warn(
-          `[access-mirror] 403 listing members for ${input.projectId} on ${region.origin}`,
-        );
-        continue;
-      }
       if (isTrimbleHttpError(error) && error.status === 401) {
         throw error;
+      }
+      if (isTrimbleHttpError(error) && error.status === 403) {
+        coreForbidden = region.origin === home.origin;
+        console.info(
+          `[access-mirror] Core 403 on ${region.origin} for project ${input.projectId} — ${
+            region.origin === home.origin ? "home region" : "trying next region"
+          }`,
+        );
+        continue;
       }
     }
   }
 
-  if (forbidden) throw forbidden;
-  return { users: [], origin: home.origin };
+  return { users: [], origin: home.origin, coreForbidden };
 }
 
 function uniqueOrigins(regions: RegionInfo[]): RegionInfo[] {
@@ -144,6 +146,15 @@ export async function resolveOperatorCapability(input: {
   operatorEmail?: string;
   members: ConnectUserSummary[];
 }): Promise<OperatorCapability> {
+  const self = input.operatorEmail
+    ? input.members.find((member) => member.email.toLowerCase() === input.operatorEmail!.toLowerCase())
+    : undefined;
+  const projectLevel: OperatorCapability = self
+    ? normalizeRole(self.role) === "ADMIN"
+      ? "project-admin"
+      : "project-user"
+    : "unknown";
+
   try {
     const me = await fetchMe(input.token);
     let projectDetails: Record<string, unknown> | undefined;
@@ -165,16 +176,13 @@ export async function resolveOperatorCapability(input: {
       return "account-admin";
     }
   } catch (error) {
-    if (isTrimbleHttpError(error) && error.status === 401) throw error;
+    if (isTrimbleHttpError(error) && error.status === 401) {
+      throw error;
+    }
+    console.info(
+      `[access-mirror] Account Admin probe skipped (${isTrimbleHttpError(error) ? error.status : "error"}) — using ${projectLevel}`,
+    );
   }
 
-  if (input.operatorEmail) {
-    const self = input.members.find(
-      (member) => member.email.toLowerCase() === input.operatorEmail!.toLowerCase(),
-    );
-    if (self) {
-      return normalizeRole(self.role) === "ADMIN" ? "project-admin" : "project-user";
-    }
-  }
-  return "unknown";
+  return projectLevel;
 }

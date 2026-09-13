@@ -26,6 +26,7 @@ export function MirrorPage(props: {
     currentProjectId: props.currentProjectId,
     currentProjectLocation: props.currentProjectLocation,
     operatorEmail: props.operatorEmail,
+    capability: props.capability,
   });
 
   const filteredMembers = useMemo(() => {
@@ -62,15 +63,22 @@ export function MirrorPage(props: {
   }
 
   const authFailed = props.membersErrorStatus === 401 || flow.errorStatus === 401;
-  const forbidden = props.membersErrorStatus === 403 || flow.errorStatus === 403;
+  const canWorkAtProjectLevel =
+    props.members.length > 0 ||
+    props.capability === "project-admin" ||
+    props.capability === "account-admin";
+  const blockingForbidden =
+    !canWorkAtProjectLevel &&
+    (props.membersErrorStatus === 403 || flow.errorStatus === 403);
 
   return (
     <section className="panel">
       <header className="panel-header">
         <h1>User access mirroring</h1>
         <p>
-          Copy project membership from a source user onto a target user. Account Admin APIs are
-          used when available; otherwise project members from the Core API are used.
+          Copy project membership from a source user onto a target user. Project Admins can
+          mirror within projects they administer. Account Admin APIs are used only when that
+          role is available.
         </p>
       </header>
 
@@ -81,13 +89,13 @@ export function MirrorPage(props: {
           401 Unauthorized — grant or refresh the access token, then reload the extension.
         </p>
       ) : null}
-      {forbidden ? (
+      {blockingForbidden ? (
         <p className="banner banner-error" role="alert">
-          403 Forbidden — this user is not an Account Admin. Falling back to members of the current
-          project. You can only mirror access for projects you can administer.
+          403 Forbidden — you have no Project Admin rights on this project, so members cannot be
+          listed and mirroring is blocked here.
         </p>
       ) : null}
-      {props.membersError && !authFailed && !forbidden ? (
+      {props.membersError && !authFailed && !blockingForbidden ? (
         <p className="banner banner-error" role="alert">
           {props.membersError}
         </p>
@@ -103,7 +111,7 @@ export function MirrorPage(props: {
         {props.capability === "account-admin"
           ? " · Account Admin (can mirror across the account)"
           : props.capability === "project-admin"
-            ? " · Project Admin (Core API fallback)"
+            ? " · Project Admin (mirrors projects you administer)"
             : props.capability === "project-user"
               ? " · Project User (invite may be restricted)"
               : ""}
