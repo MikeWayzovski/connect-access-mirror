@@ -132,6 +132,12 @@ button:disabled {
   border-radius: 4px;
 }
 
+.banner-error {
+  background: #fde8e8;
+  border-color: #f0b4b4;
+  color: var(--danger);
+}
+
 .table-wrap {
   overflow: auto;
   margin-top: 12px;

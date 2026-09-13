@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ConnectProject, ConnectUser, WorkspaceAPI } from "trimble-connect-workspace-api";
 import { StatusBar } from "@/components/StatusBar";
 import { MirrorPage } from "@/features/mirror/MirrorPage";
+import { useProjectMembers } from "@/features/mirror/useProjectMembers";
 import { isLikelyToken, type ConnectionState, type ConnectUserSummary, type TokenStatus } from "@/lib/types";
 import {
   connectToConnect,
@@ -26,6 +27,13 @@ export function ConnectShell() {
   const [operator, setOperator] = useState<ConnectUser | null>(null);
   const [members, setMembers] = useState<ConnectUserSummary[]>([]);
   const [view, setView] = useState<View>("mirror");
+  const projectMembers = useProjectMembers({
+    token,
+    projectId: project?.id,
+    location: project?.location,
+    operatorEmail: operator?.email,
+    seed: members,
+  });
 
   const applyToken = useCallback((value: unknown) => {
     const raw = typeof value === "string" ? value : "";
@@ -90,8 +98,11 @@ export function ConnectShell() {
               })),
             );
           }
-        } catch {
-          // Members will be empty until REST is available.
+        } catch (cause) {
+          console.warn(
+            "[access-mirror] Workspace getMembers failed; will use Core API after token grant",
+            cause instanceof Error ? cause.message : cause,
+          );
         }
 
         setConnection("connected");
@@ -117,24 +128,15 @@ export function ConnectShell() {
     };
   }, [applyToken]);
 
-  const memberList = members.length
-    ? members
-    : operator?.email
-      ? [
-          {
-            id: operator.id,
-            email: operator.email,
-            firstName: operator.firstName,
-            lastName: operator.lastName,
-          },
-        ]
-      : [];
+  const listedMembers = projectMembers.users.length ? projectMembers.users : members;
 
   return (
     <main className="app">
       <StatusBar
         connection={connection}
         token={tokenStatus}
+        capability={projectMembers.capability}
+        memberCount={listedMembers.length}
         projectName={project?.name}
         operatorEmail={operator?.email}
         message={statusMessage}
@@ -184,7 +186,11 @@ export function ConnectShell() {
       {connection === "connected" && view === "mirror" ? (
         <MirrorPage
           token={token}
-          members={memberList}
+          members={listedMembers}
+          membersLoading={projectMembers.loading}
+          membersError={projectMembers.error}
+          membersErrorStatus={projectMembers.errorStatus}
+          capability={projectMembers.capability}
           currentProjectId={project?.id}
           currentProjectLocation={project?.location}
           operatorEmail={operator?.email}

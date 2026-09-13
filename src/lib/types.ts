@@ -10,6 +10,8 @@ export type TokenStatus = "idle" | "pending" | "granted" | "denied" | "error";
 
 export type MirrorMode = "account" | "operator";
 
+export type OperatorCapability = "account-admin" | "project-admin" | "project-user" | "unknown";
+
 export type PreviewAction = "add" | "skip" | "forbidden" | "already-member";
 
 export interface ConnectUserSummary {
@@ -51,8 +53,16 @@ export function displayName(user: ConnectUserSummary): string {
 }
 
 export function normalizeRole(role?: string): ProjectRole {
-  const value = (role ?? "USER").toUpperCase();
-  return value === "ADMIN" || value === "PROJECTADMINISTRATOR" ? "ADMIN" : "USER";
+  const value = (role ?? "USER").toUpperCase().replace(/[\s_-]/g, "");
+  if (
+    value === "ADMIN" ||
+    value === "PROJECTADMIN" ||
+    value === "PROJECTADMINISTRATOR" ||
+    value === "ADMINISTRATOR"
+  ) {
+    return "ADMIN";
+  }
+  return "USER";
 }
 
 export function isLikelyToken(value: string): boolean {

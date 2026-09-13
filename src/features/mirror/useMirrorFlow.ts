@@ -2,11 +2,13 @@
 
 import { useCallback, useMemo, useState } from "react";
 import { loadRegions, pickHomeRegion } from "@/lib/regions";
+import { extractAccountId, parseConnectUsers } from "@/lib/members";
 import {
   accountRequest,
   asArray,
   coreRequest,
   fetchMe,
+  isTrimbleHttpError,
   updateUsers,
 } from "@/lib/trimble-client";
 import type {
@@ -23,7 +25,7 @@ import { normalizeRole } from "@/lib/types";
 type HttpError = Error & { status?: number };
 
 function isHttpError(error: unknown): error is HttpError {
-  return error instanceof Error;
+  return isTrimbleHttpError(error) || (error instanceof Error && "status" in error);
 }
 
 function emailOf(value: Record<string, unknown>): string {
@@ -55,26 +57,6 @@ function usersMatch(a: ConnectUserSummary, b: Record<string, unknown> | ConnectU
   if (!other) return false;
   if (a.id && other.id && a.id === other.id) return true;
   return Boolean(a.email && other.email && a.email.toLowerCase() === other.email.toLowerCase());
-}
-
-function extractAccountId(
-  me: Record<string, unknown>,
-  project?: Record<string, unknown>,
-): string | undefined {
-  const company = me.company as Record<string, unknown> | undefined;
-  const account = me.account as Record<string, unknown> | undefined;
-  const accounts = asArray<Record<string, unknown>>(me.accounts);
-  const projectAccount = project?.account as Record<string, unknown> | undefined;
-  const candidates = [
-    me.accountId,
-    me.account_id,
-    account?.id,
-    company?.id,
-    accounts[0]?.id,
-    project?.accountId,
-    projectAccount?.id,
-  ];
-  return candidates.find((value): value is string => typeof value === "string" && value.length > 0);
 }
 
 async function mapPool<T, R>(items: T[], limit: number, mapper: (item: T) => Promise<R>): Promise<R[]> {
@@ -139,6 +121,7 @@ export function useMirrorFlow(options: {
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState<MirrorMode | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [errorStatus, setErrorStatus] = useState<number | null>(null);
   const [rows, setRows] = useState<PreviewRow[]>([]);
   const [applyLog, setApplyLog] = useState<string[]>([]);
 
@@ -146,6 +129,7 @@ export function useMirrorFlow(options: {
     setRows([]);
     setMode(null);
     setMessage(null);
+    setErrorStatus(null);
     setApplyLog([]);
   }, []);
 
@@ -157,6 +141,7 @@ export function useMirrorFlow(options: {
       }
       setBusy(true);
       setMessage(null);
+      setErrorStatus(null);
       setApplyLog([]);
       try {
         const token = options.token;
@@ -182,6 +167,10 @@ export function useMirrorFlow(options: {
           ? await tryAccountPreview(token, accountId, source, target, regions, home.origin)
           : null;
 
+        if (!accountId) {
+          console.info("[access-mirror] No accountId on users/me or project — using Core project fallback");
+        }
+
         if (accountRows) {
           setMode("account");
           setRows(accountRows);
@@ -206,6 +195,7 @@ export function useMirrorFlow(options: {
       } catch (error) {
         setRows([]);
         setMode(null);
+        setErrorStatus(isHttpError(error) ? error.status ?? null : null);
         setMessage(error instanceof Error ? error.message : "Preview failed.");
       } finally {
         setBusy(false);
@@ -270,7 +260,7 @@ export function useMirrorFlow(options: {
     );
   }, [rows]);
 
-  return { busy, mode, message, rows, counts, applyLog, preview, apply, reset };
+  return { busy, mode, message, errorStatus, rows, counts, applyLog, preview, apply, reset };
 }
 
 async function tryAccountPreview(
@@ -290,7 +280,10 @@ async function tryAccountPreview(
       userId,
     });
     const projects = parseAccountUserProjects(payload);
-    if (!projects.length) return null;
+    if (!projects.length) {
+      console.info("[access-mirror] Account user mapping had no project list — using Core fallback");
+      return null;
+    }
 
     return projects.map((project) => ({
       projectId: project.id,
@@ -301,9 +294,12 @@ async function tryAccountPreview(
       detail: `Account membership; target ${target.email} will be invited as ${project.role}.`,
     }));
   } catch (error) {
-    if (isHttpError(error) && (error.status === 401 || error.status === 403 || error.status === 404)) {
+    const status = isHttpError(error) ? error.status : undefined;
+    if (status === 401 || status === 403 || status === 404) {
+      console.info(`[access-mirror] Account GET project-users/{id} → ${status}; falling back to Core API`);
       return null;
     }
+    console.info("[access-mirror] Account preview failed; falling back to Core API");
     return null;
   }
 }
@@ -339,28 +335,22 @@ async function operatorPreview(
         origin: project.regionOrigin,
         path: `/tc/api/2.0/projects/${project.id}/users`,
       });
-      const members = asArray<Record<string, unknown>>(membersPayload);
+      const members = parseConnectUsers(membersPayload);
       const sourceMember = members.find((member) => usersMatch(source, member));
       if (!sourceMember) return null;
 
       const targetMember = members.find((member) => usersMatch(target, member));
       const operatorMember = operatorEmail
-        ? members.find((member) => emailOf(member).toLowerCase() === operatorEmail.toLowerCase())
+        ? members.find((member) => member.email.toLowerCase() === operatorEmail.toLowerCase())
         : undefined;
-      const operatorRole = operatorMember
-        ? normalizeRole(typeof operatorMember.role === "string" ? operatorMember.role : undefined)
-        : undefined;
+      const operatorRole = operatorMember ? normalizeRole(operatorMember.role) : undefined;
 
       let action: PreviewAction = "add";
-      const sourceRole = normalizeRole(
-        typeof sourceMember.role === "string" ? sourceMember.role : undefined,
-      );
+      const sourceRole = normalizeRole(sourceMember.role);
       let detail = `Source role ${sourceRole}.`;
       if (targetMember) {
         action = "already-member";
-        detail = `Target already has role ${normalizeRole(
-          typeof targetMember.role === "string" ? targetMember.role : undefined,
-        )}.`;
+        detail = `Target already has role ${normalizeRole(targetMember.role)}.`;
       } else if (operatorRole && operatorRole !== "ADMIN") {
         action = "forbidden";
         detail = "You are not a project admin on this project.";

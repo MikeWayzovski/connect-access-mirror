@@ -3,6 +3,32 @@
 import { MASTER_ORIGIN } from "./allowed-hosts";
 import type { PreviewRow, ProjectRole, RegionInfo } from "./types";
 
+export class TrimbleHttpError extends Error {
+  status: number;
+  body?: unknown;
+
+  constructor(message: string, status: number, body?: unknown) {
+    super(message);
+    this.name = "TrimbleHttpError";
+    this.status = status;
+    this.body = body;
+  }
+}
+
+export function isTrimbleHttpError(error: unknown): error is TrimbleHttpError {
+  return error instanceof TrimbleHttpError;
+}
+
+function statusMessage(status: number, fallback: string): string {
+  if (status === 401) {
+    return "401 Unauthorized: the Trimble token is missing, expired, or was rejected.";
+  }
+  if (status === 403) {
+    return "403 Forbidden: this identity is not allowed (not Account Admin, or members cannot be listed).";
+  }
+  return fallback;
+}
+
 async function callApi<T>(
   path: string,
   token: string,
@@ -16,17 +42,22 @@ async function callApi<T>(
 
   const response = await fetch(path, { ...init, headers, cache: "no-store" });
   const text = await response.text();
-  const payload = text ? (JSON.parse(text) as T & { error?: string }) : ({} as T);
+  let payload: T & { error?: string; message?: string } = {} as T & {
+    error?: string;
+    message?: string;
+  };
+  if (text) {
+    try {
+      payload = JSON.parse(text) as T & { error?: string; message?: string };
+    } catch {
+      payload = { error: text.slice(0, 180) } as T & { error?: string };
+    }
+  }
 
   if (!response.ok) {
-    const message =
-      (payload as { error?: string; message?: string }).error ??
-      (payload as { message?: string }).message ??
-      `Request failed (${response.status})`;
-    const error = new Error(message) as Error & { status?: number; body?: unknown };
-    error.status = response.status;
-    error.body = payload;
-    throw error;
+    const fallback =
+      payload.error ?? payload.message ?? `Request failed (${response.status})`;
+    throw new TrimbleHttpError(statusMessage(response.status, fallback), response.status, payload);
   }
 
   return payload;
@@ -101,8 +132,26 @@ export function asArray<T>(value: unknown): T[] {
   if (Array.isArray(value)) return value as T[];
   if (value && typeof value === "object") {
     const record = value as Record<string, unknown>;
-    for (const key of ["items", "users", "projects", "data", "content", "members"]) {
+    const keys = [
+      "items",
+      "users",
+      "projects",
+      "data",
+      "content",
+      "members",
+      "result",
+      "list",
+      "projectUsers",
+    ];
+    for (const key of keys) {
       if (Array.isArray(record[key])) return record[key] as T[];
+    }
+    for (const key of keys) {
+      const nested = record[key];
+      if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+        const inner = asArray<T>(nested);
+        if (inner.length) return inner;
+      }
     }
   }
   return [];

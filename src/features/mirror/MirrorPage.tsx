@@ -1,12 +1,16 @@
 "use client";
 
 import { FormEvent, useMemo, useState } from "react";
-import { displayName, type ConnectUserSummary } from "@/lib/types";
+import { displayName, type ConnectUserSummary, type OperatorCapability } from "@/lib/types";
 import { useMirrorFlow } from "./useMirrorFlow";
 
 export function MirrorPage(props: {
   token: string | null;
   members: ConnectUserSummary[];
+  membersLoading?: boolean;
+  membersError?: string | null;
+  membersErrorStatus?: number | null;
+  capability?: OperatorCapability;
   currentProjectId?: string;
   currentProjectLocation?: string;
   operatorEmail?: string;
@@ -44,7 +48,9 @@ export function MirrorPage(props: {
     event.preventDefault();
     const source = resolveUser(sourceId, sourceEmail);
     const target = resolveUser(targetId, targetEmail);
-    if (!source || !target) return;
+    if (!source || !target) {
+      return;
+    }
     if (source.email.toLowerCase() === target.email.toLowerCase()) return;
     await flow.preview(source, target);
   }
@@ -55,15 +61,54 @@ export function MirrorPage(props: {
     await flow.apply(target);
   }
 
+  const authFailed = props.membersErrorStatus === 401 || flow.errorStatus === 401;
+  const forbidden = props.membersErrorStatus === 403 || flow.errorStatus === 403;
+
   return (
     <section className="panel">
       <header className="panel-header">
         <h1>User access mirroring</h1>
         <p>
           Copy project membership from a source user onto a target user. Account Admin APIs are
-          used when available; otherwise only projects you can see are considered.
+          used when available; otherwise project members from the Core API are used.
         </p>
       </header>
+
+      {props.membersLoading ? <p className="muted">Loading project members from Trimble Connect…</p> : null}
+
+      {authFailed ? (
+        <p className="banner banner-error" role="alert">
+          401 Unauthorized — grant or refresh the access token, then reload the extension.
+        </p>
+      ) : null}
+      {forbidden ? (
+        <p className="banner banner-error" role="alert">
+          403 Forbidden — this user is not an Account Admin. Falling back to members of the current
+          project. You can only mirror access for projects you can administer.
+        </p>
+      ) : null}
+      {props.membersError && !authFailed && !forbidden ? (
+        <p className="banner banner-error" role="alert">
+          {props.membersError}
+        </p>
+      ) : null}
+      {flow.errorStatus && flow.message && flow.errorStatus !== 401 && flow.errorStatus !== 403 ? (
+        <p className="banner banner-error" role="alert">
+          {flow.message}
+        </p>
+      ) : null}
+
+      <p className="muted">
+        {props.members.length} member{props.members.length === 1 ? "" : "s"} in this project
+        {props.capability === "account-admin"
+          ? " · Account Admin (can mirror across the account)"
+          : props.capability === "project-admin"
+            ? " · Project Admin (Core API fallback)"
+            : props.capability === "project-user"
+              ? " · Project User (invite may be restricted)"
+              : ""}
+        .
+      </p>
 
       <form className="stack" onSubmit={onPreview}>
         <label>
@@ -83,6 +128,7 @@ export function MirrorPage(props: {
               {filteredMembers.map((member) => (
                 <option key={member.id ?? member.email} value={member.id ?? member.email}>
                   {displayName(member)} ({member.email})
+                  {member.role ? ` · ${member.role}` : ""}
                 </option>
               ))}
             </select>
@@ -100,6 +146,7 @@ export function MirrorPage(props: {
               {filteredMembers.map((member) => (
                 <option key={member.id ?? member.email} value={member.id ?? member.email}>
                   {displayName(member)} ({member.email})
+                  {member.role ? ` · ${member.role}` : ""}
                 </option>
               ))}
             </select>
@@ -129,7 +176,7 @@ export function MirrorPage(props: {
         </div>
       </form>
 
-      {flow.message ? <p className="banner">{flow.message}</p> : null}
+      {flow.message && !flow.errorStatus ? <p className="banner">{flow.message}</p> : null}
       {flow.mode ? (
         <p className="muted">
           Mode: {flow.mode === "account" ? "Account Admin" : "Operator-visible projects"} · add{" "}

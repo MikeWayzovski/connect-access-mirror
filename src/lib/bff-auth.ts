@@ -11,11 +11,24 @@ export function unauthorized(): NextResponse {
   return NextResponse.json({ error: "Missing Authorization bearer token." }, { status: 401 });
 }
 
+function safeUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return url.split("?")[0] ?? url;
+  }
+}
+
 export async function forwardJson(
   url: string,
   token: string,
   init: RequestInit = {},
 ): Promise<NextResponse> {
+  const method = (init.method ?? "GET").toUpperCase();
+  const target = safeUrl(url);
+  console.info(`[trimble-bff] → ${method} ${target}`);
+
   const headers = new Headers(init.headers);
   headers.set("Authorization", `Bearer ${token}`);
   if (init.body && !headers.has("Content-Type")) {
@@ -24,6 +37,13 @@ export async function forwardJson(
   headers.set("Accept", "application/json");
 
   const response = await fetch(url, { ...init, headers, cache: "no-store" });
+  console.info(`[trimble-bff] ← ${method} ${target} ${response.status}`);
+  if (response.status === 401 || response.status === 403) {
+    console.warn(
+      `[trimble-bff] Trimble returned ${response.status} for ${method} ${target} (bearer token not logged)`,
+    );
+  }
+
   const text = await response.text();
   const contentType = response.headers.get("content-type") ?? "application/json";
 
