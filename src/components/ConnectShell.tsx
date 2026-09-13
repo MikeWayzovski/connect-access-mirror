@@ -13,6 +13,7 @@ import {
   OPEN_MIRROR_COMMAND,
   readHostContext,
 } from "@/lib/workspace";
+import { installIframeHostGuard, withHostTimeout } from "@/lib/iframe-host-guard";
 
 type View = "mirror" | "config";
 
@@ -60,6 +61,7 @@ export function ConnectShell() {
     let cancelled = false;
 
     async function start() {
+      installIframeHostGuard();
       if (isStandaloneWindow()) {
         setConnection("standalone");
         setStatusMessage("Opened outside Trimble Connect. iFrame APIs are unavailable.");
@@ -85,7 +87,7 @@ export function ConnectShell() {
         setOperator(context.user);
 
         try {
-          const hostMembers = await api.project.getMembers();
+          const hostMembers = await withHostTimeout(api.project.getMembers(), [], 5000);
           if (!cancelled) {
             setMembers(
               hostMembers.map((member) => ({
@@ -112,7 +114,11 @@ export function ConnectShell() {
             : "Connected to Trimble Connect",
         );
 
-        const permission = await api.extension.requestPermission("accesstoken");
+        const permission = await withHostTimeout(
+          api.extension.requestPermission("accesstoken"),
+          "pending",
+          8000,
+        );
         if (!cancelled) applyToken(permission);
       } catch (cause) {
         if (cancelled) return;
@@ -131,7 +137,7 @@ export function ConnectShell() {
   const listedMembers = projectMembers.users.length ? projectMembers.users : members;
 
   return (
-    <main className="app">
+    <main className="app" id="main-content">
       <StatusBar
         connection={connection}
         token={tokenStatus}

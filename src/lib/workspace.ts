@@ -1,5 +1,6 @@
 import * as WorkspaceAPI from "trimble-connect-workspace-api";
 import type { ConnectProject, ConnectUser, WorkspaceAPI as WorkspaceApi } from "trimble-connect-workspace-api";
+import { withHostTimeout } from "./iframe-host-guard";
 
 export const OPEN_MIRROR_COMMAND = "open-mirror";
 export const OPEN_CONFIG_COMMAND = "open-config";
@@ -15,18 +16,42 @@ export async function connectToConnect(
 ): Promise<WorkspaceApi> {
   const api = await WorkspaceAPI.connect(
     window.parent,
-    (event: string, args: { data?: unknown }) => onEvent(event, args),
+    (event: string, args: { data?: unknown }) => {
+      try {
+        onEvent(event, args);
+      } catch (error) {
+        console.info("[access-mirror] Workspace event handler failed; ignoring", error);
+      }
+    },
     timeoutMs,
   );
 
-  await api.ui.setMenu({
-    title: "Access Mirror",
-    icon: `${window.location.origin}/icon.svg`,
-    command: OPEN_MIRROR_COMMAND,
-  });
+  try {
+    await withHostTimeout(
+      api.ui.setMenu({
+        title: "Access Mirror",
+        icon: `${window.location.origin}/icon.svg`,
+        command: OPEN_MIRROR_COMMAND,
+      }).then(() => undefined),
+      undefined,
+      5000,
+    );
+  } catch (error) {
+    console.info("[access-mirror] setMenu skipped (host did not respond)", error);
+  }
 
-  await api.ui.setActiveMenuItem(OPEN_MIRROR_COMMAND);
-  await api.extension.setStatusMessage("Access Mirror connected");
+  try {
+    await withHostTimeout(api.ui.setActiveMenuItem(OPEN_MIRROR_COMMAND), false, 5000);
+  } catch (error) {
+    console.info("[access-mirror] setActiveMenuItem skipped (host did not respond)", error);
+  }
+
+  try {
+    await withHostTimeout(api.extension.setStatusMessage("Access Mirror connected"), false, 5000);
+  } catch (error) {
+    console.info("[access-mirror] setStatusMessage skipped (host did not respond)", error);
+  }
+
   return api;
 }
 
