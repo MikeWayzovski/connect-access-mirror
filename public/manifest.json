@@ -1,0 +1,9 @@
+{
+  "title": "Access Mirror",
+  "description": "Copy Trimble Connect project membership from a source user to a target user.",
+  "icon": "https://connect-access-mirror.vercel.app/icon.svg",
+  "url": "https://connect-access-mirror.vercel.app/",
+  "configCommand": "open-config",
+  "extensionType": ["project"],
+  "enabled": true
+}

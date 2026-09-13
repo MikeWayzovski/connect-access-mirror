@@ -31,7 +31,7 @@ For local HTTP, `x-forwarded-proto` is not required; the app uses `request.nextU
 
 1. Open a project as a **project administrator**.
 2. Go to **Settings → Apps & Capabilities → Add Custom**.
-3. Paste `https://<your-vercel-domain>/manifest.json`.
+3. Paste `https://connect-access-mirror.vercel.app/manifest.json`.
 4. Open **Access Mirror** from the left navigation.
 5. Grant the extension access to the Trimble Identity token when Connect prompts you.
 
